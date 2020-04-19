@@ -27,6 +27,7 @@
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Logger.h>
 #include <SoapySDR/Types.h>
+#include <SoapySDR/ConverterRegistry.hpp>
 #include <rtl-sdr.h>
 #include <stdexcept>
 #include <thread>
@@ -246,12 +247,7 @@ private:
     bool iqSwap, gainMode, offsetMode, digitalAGC;
     double IFGain[6], tunerGain;
     std::atomic<long long> ticks;
-
-    std::vector<std::complex<float> > _lut_32f;
-    std::vector<std::complex<float> > _lut_swap_32f;
-    std::vector<std::complex<int16_t> > _lut_16i;
-    std::vector<std::complex<int16_t> > _lut_swap_16i;
-
+    SoapySDR::ConverterRegistry::ConverterFunction converterFunction;
 
 public:
     struct Buffer

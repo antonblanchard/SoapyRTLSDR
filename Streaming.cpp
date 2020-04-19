@@ -27,17 +27,20 @@
 #include <SoapySDR/Logger.hpp>
 #include <SoapySDR/Formats.hpp>
 #include <SoapySDR/Time.hpp>
+#include <SoapySDR/ConverterRegistry.hpp>
 #include <algorithm> //min
 #include <climits> //SHRT_MAX
 #include <cstring> // memcpy
 
+#define SOAPY_NATIVE_FORMAT SOAPY_SDR_CU8
 
 std::vector<std::string> SoapyRTLSDR::getStreamFormats(const int direction, const size_t channel) const {
     std::vector<std::string> formats;
 
-    formats.push_back(SOAPY_SDR_CS8);
-    formats.push_back(SOAPY_SDR_CS16);
-    formats.push_back(SOAPY_SDR_CF32);
+    for (const auto &target : SoapySDR::ConverterRegistry::listTargetFormats(SOAPY_NATIVE_FORMAT))
+    {
+        formats.push_back(target);
+    }
 
     return formats;
 }
@@ -49,7 +52,7 @@ std::string SoapyRTLSDR::getNativeStreamFormat(const int direction, const size_t
      }
 
      fullScale = 128;
-     return SOAPY_SDR_CS8;
+     return SOAPY_NATIVE_FORMAT;
 }
 
 SoapySDR::ArgInfoList SoapyRTLSDR::getStreamArgsInfo(const int direction, const size_t channel) const {
@@ -167,63 +170,14 @@ SoapySDR::Stream *SoapyRTLSDR::setupStream(
         throw std::runtime_error("setupStream invalid channel selection");
     }
 
-    //check the format
-    if (format == SOAPY_SDR_CF32)
-    {
-        SoapySDR_log(SOAPY_SDR_INFO, "Using format CF32.");
-        rxFormat = RTL_RX_FORMAT_FLOAT32;
-    }
-    else if (format == SOAPY_SDR_CS16)
-    {
-        SoapySDR_log(SOAPY_SDR_INFO, "Using format CS16.");
-        rxFormat = RTL_RX_FORMAT_INT16;
-    }
-    else if (format == SOAPY_SDR_CS8) {
-        SoapySDR_log(SOAPY_SDR_INFO, "Using format CS8.");
-        rxFormat = RTL_RX_FORMAT_INT8;
-    }
-    else
-    {
+    std::vector<std::string> sources = SoapySDR::ConverterRegistry::listSourceFormats(format);
+
+    if (std::find(sources.begin(), sources.end(), SOAPY_NATIVE_FORMAT) == sources.end()) {
         throw std::runtime_error(
-                "setupStream invalid format '" + format
-                        + "' -- Only CS8, CS16 and CF32 are supported by SoapyRTLSDR module.");
+                "setupStream invalid format '" + format + "'.");
     }
 
-    if (rxFormat != RTL_RX_FORMAT_INT8 && !_lut_32f.size())
-    {
-        SoapySDR_logf(SOAPY_SDR_DEBUG, "Generating RTL-SDR lookup tables");
-        // create lookup tables
-        for (unsigned int i = 0; i <= 0xffff; i++)
-        {
-# if (__BYTE_ORDER == __LITTLE_ENDIAN)
-            float re = ((i & 0xff) - 127.4f) * (1.0f / 128.0f);
-            float im = ((i >> 8) - 127.4f) * (1.0f / 128.0f);
-#else
-            float re = ((i >> 8) - 127.4f) * (1.0f / 128.0f);
-            float im = ((i & 0xff) - 127.4f) * (1.0f / 128.0f);
-#endif
-
-            std::complex<float> v32f, vs32f;
-
-            v32f.real(re);
-            v32f.imag(im);
-            _lut_32f.push_back(v32f);
-
-            vs32f.real(v32f.imag());
-            vs32f.imag(v32f.real());
-            _lut_swap_32f.push_back(vs32f);
-
-            std::complex<int16_t> v16i, vs16i;
-
-            v16i.real(int16_t((float(SHRT_MAX) * re)));
-            v16i.imag(int16_t((float(SHRT_MAX) * im)));
-            _lut_16i.push_back(v16i);
-
-            vs16i.real(vs16i.imag());
-            vs16i.imag(vs16i.real());
-            _lut_swap_16i.push_back(vs16i);
-        }
-    }
+    converterFunction = SoapySDR::ConverterRegistry::getFunction(SOAPY_NATIVE_FORMAT, format, SoapySDR::ConverterRegistry::GENERIC);
 
     bufferLength = DEFAULT_BUFFER_LENGTH;
     if (args.count("bufflen") != 0)
@@ -373,72 +327,7 @@ int SoapyRTLSDR::readStream(
     size_t returnedElems = std::min(bufferedElems, numElems);
 
     //convert into user's buff0
-    if (rxFormat == RTL_RX_FORMAT_FLOAT32)
-    {
-        float *ftarget = (float *) buff0;
-        std::complex<float> tmp;
-        if (iqSwap)
-        {
-            for (size_t i = 0; i < returnedElems; i++)
-            {
-                tmp = _lut_swap_32f[*((uint16_t*) &_currentBuff[2 * i])];
-                ftarget[i * 2] = tmp.real();
-                ftarget[i * 2 + 1] = tmp.imag();
-            }
-        }
-        else
-        {
-            for (size_t i = 0; i < returnedElems; i++)
-            {
-                tmp = _lut_32f[*((uint16_t*) &_currentBuff[2 * i])];
-                ftarget[i * 2] = tmp.real();
-                ftarget[i * 2 + 1] = tmp.imag();
-            }
-        }
-    }
-    else if (rxFormat == RTL_RX_FORMAT_INT16)
-    {
-        int16_t *itarget = (int16_t *) buff0;
-        std::complex<int16_t> tmp;
-        if (iqSwap)
-        {
-            for (size_t i = 0; i < returnedElems; i++)
-            {
-                tmp = _lut_swap_16i[*((uint16_t*) &_currentBuff[2 * i])];
-                itarget[i * 2] = tmp.real();
-                itarget[i * 2 + 1] = tmp.imag();
-            }
-        }
-        else
-        {
-            for (size_t i = 0; i < returnedElems; i++)
-            {
-                tmp = _lut_16i[*((uint16_t*) &_currentBuff[2 * i])];
-                itarget[i * 2] = tmp.real();
-                itarget[i * 2 + 1] = tmp.imag();
-            }
-        }
-    }
-    else if (rxFormat == RTL_RX_FORMAT_INT8)
-    {
-        int8_t *itarget = (int8_t *) buff0;
-        if (iqSwap)
-        {
-            for (size_t i = 0; i < returnedElems; i++)
-            {
-                itarget[i * 2] = _currentBuff[i * 2 + 1]-128;
-                itarget[i * 2 + 1] = _currentBuff[i * 2]-128;
-            }
-        }
-        else
-        {
-            for (size_t i = 0; i < returnedElems; i++)
-            {
-                itarget[i * 2] = _currentBuff[i * 2]-128;
-                itarget[i * 2 + 1] = _currentBuff[i * 2 + 1]-128;
-            }
-        }
-    }
+    converterFunction(_currentBuff, buff0, returnedElems, 1);
 
     //bump variables for next call into readStream
     bufferedElems -= returnedElems;
